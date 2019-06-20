@@ -49,8 +49,8 @@ where
 
         out.push_sql("SELECT * FROM (");
         self.query.walk_ast(out.reborrow())?;
-        out.push_sql(") ");
-        from_clause.walk_ast(out.reborrow())?;
+        out.push_sql(") users ");
+        // from_clause.walk_ast(out.reborrow())?;
 
         out.push_sql(" WHERE ");
         out.push_sql("(");
@@ -81,7 +81,7 @@ mod test {
     #[allow(unused_imports)]
     use super::*;
     use diesel_factories::{sequence, Factory};
-    use schema::users;
+    use schema::*;
 
     mod schema {
         table! {
@@ -92,6 +92,19 @@ mod test {
                 slug -> Text,
             }
         }
+
+        table! {
+            follows (id) {
+                followee_id -> Integer,
+                followee_type -> Nullable<Text>,
+                follower_id -> Integer,
+                id -> Integer,
+                source -> Nullable<Text>,
+                unfollowed_at -> Nullable<Timestamptz>,
+            }
+        }
+
+        allow_tables_to_appear_in_same_query!(follows, users);
     }
 
     #[derive(Eq, PartialEq, Debug, Clone, QueryableByName, Queryable, Identifiable)]
@@ -170,5 +183,41 @@ mod test {
                 .collect::<Vec<_>>(),
             vec![three.firstname, four.firstname],
         );
+    }
+
+    // #[test]
+    // fn test_advanced_query() {
+    //     let db = connect_to_db();
+
+    //     let user = UserFactory::default().insert(&db);
+
+    //     let query = follows::table
+    //         .inner_join(users::table.on(users::id.eq(follows::followee_id)))
+    //         .filter(
+    //             follows::followee_type
+    //                 .eq("User")
+    //                 .and(follows::follower_id.eq(user.id))
+    //                 .and(follows::unfollowed_at.is_null()),
+    //         )
+    //         .select(users::all_columns);
+
+    //     let query = KeysetPaginated {
+    //         query,
+    //         order: (users::firstname, users::lastname),
+    //         // TODO: This should be a real cursor so an id from a previous query
+    //         filter: users::id.eq(user.id),
+    //         page_size: 20,
+    //     };
+
+    //     let users = query.load::<User>(&db).unwrap();
+
+    //     assert!(users.is_empty());
+    // }
+
+    fn connect_to_db() -> PgConnection {
+        let url = "postgres://localhost/tonsser-api_test";
+        let db = PgConnection::establish(url).unwrap();
+        db.begin_test_transaction().unwrap();
+        db
     }
 }
