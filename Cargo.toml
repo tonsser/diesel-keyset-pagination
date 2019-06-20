@@ -1,0 +1,11 @@
+[package]
+name = "diesel-keyset-pagination"
+version = "0.0.1"
+authors = ["David Pedersen <david.pdrsn@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+diesel = { version = "^1.4", features = ["postgres"] }
+
+[dev-dependencies]
+diesel-factories = "0.1.2"
