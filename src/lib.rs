@@ -36,7 +36,7 @@ impl<Query: query_builder::Query, Order, Cursor, CursorColumn> query_builder::Qu
     type SqlType = Query::SqlType;
 }
 
-impl<Query, Order, Cursor, CursorColumn> RunQueryDsl<PgConnection>
+impl<Query, Order, Cursor, CursorColumn, C> RunQueryDsl<C>
     for KeysetPaginated<Query, Order, Cursor, CursorColumn>
 {
 }
