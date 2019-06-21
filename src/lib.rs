@@ -54,7 +54,7 @@ where
 
     // This `Copy` is necessary because `.eq` moves `self`
     // Diesel columns always implement `Copy` to should be save
-    CursorColumn: Expression + ExpressionMethods + Copy,
+    CursorColumn: ExpressionMethods + Copy,
     // This `Clone` is necessary because `.as_expression` moves `self`
     // There might be a way to get around it, but I don't know how yet
     Cursor: AsExpression<CursorColumn::SqlType> + Clone,
