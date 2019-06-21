@@ -2,6 +2,7 @@
 extern crate diesel;
 
 use diesel::associations::HasTable;
+use diesel::expression::operators::Eq;
 use diesel::expression::{AsExpression, Expression};
 use diesel::pg::Pg;
 use diesel::prelude::*;
@@ -11,46 +12,63 @@ use diesel::sql_types::*;
 use diesel::QuerySource;
 
 #[derive(Debug)]
-pub struct KeysetPaginated<Query, Order, Filter> {
+pub struct KeysetPaginated<Query, Order, Cursor, CursorColumn> {
     pub query: Query,
     pub order: Order,
-    pub filter: Filter,
+    pub cursor: Cursor,
+    pub cursor_column: CursorColumn,
     pub page_size: i64,
 }
 
-impl<Query: QueryId, Order: QueryId, Filter: 'static> QueryId
-    for KeysetPaginated<Query, Order, Filter>
+impl<Query: QueryId, Order: QueryId, Cursor: 'static, CursorColumn: QueryId> QueryId
+    for KeysetPaginated<Query, Order, Cursor, CursorColumn>
 {
-    type QueryId = KeysetPaginated<Query::QueryId, Order::QueryId, Filter>;
+    type QueryId = KeysetPaginated<Query::QueryId, Order::QueryId, Cursor, CursorColumn::QueryId>;
 
-    const HAS_STATIC_QUERY_ID: bool = Query::HAS_STATIC_QUERY_ID && Order::HAS_STATIC_QUERY_ID;
+    const HAS_STATIC_QUERY_ID: bool = Query::HAS_STATIC_QUERY_ID
+        && Order::HAS_STATIC_QUERY_ID
+        && CursorColumn::HAS_STATIC_QUERY_ID;
 }
 
-impl<Query: query_builder::Query, Order, Filter> query_builder::Query
-    for KeysetPaginated<Query, Order, Filter>
+impl<Query: query_builder::Query, Order, Cursor, CursorColumn> query_builder::Query
+    for KeysetPaginated<Query, Order, Cursor, CursorColumn>
 {
     type SqlType = Query::SqlType;
 }
 
-impl<Query, Order, Filter> RunQueryDsl<PgConnection> for KeysetPaginated<Query, Order, Filter> {}
+impl<Query, Order, Cursor, CursorColumn> RunQueryDsl<PgConnection>
+    for KeysetPaginated<Query, Order, Cursor, CursorColumn>
+{
+}
 
-impl<Query, Order, Filter> QueryFragment<Pg> for KeysetPaginated<Query, Order, Filter>
+impl<Query, Order, Cursor, CursorColumn> QueryFragment<Pg>
+    for KeysetPaginated<Query, Order, Cursor, CursorColumn>
 where
-    Query: QueryFragment<Pg> + HasTable,
-    Query::Table: HasTable,
-    <<Query::Table as HasTable>::Table as QuerySource>::FromClause: QueryFragment<Pg>,
+    Query: QueryFragment<Pg>,
     Order: QueryFragment<Pg> + Expression,
     Pg: HasSqlType<Order::SqlType>,
-    Filter: AsExpression<Bool> + QueryFragment<Pg>,
+
+    CursorColumn: Column,
+    CursorColumn::Table: HasTable,
+    <<CursorColumn::Table as HasTable>::Table as QuerySource>::FromClause: QueryFragment<Pg>,
+
+    // This `Copy` is necessary because `.eq` moves `self`
+    // Diesel columns always implement `Copy` to should be save
+    CursorColumn: Expression + ExpressionMethods + Copy,
+    // This `Clone` is necessary because `.as_expression` moves `self`
+    // There might be a way to get around it, but I don't know how yet
+    Cursor: AsExpression<CursorColumn::SqlType> + Clone,
+    Eq<CursorColumn, <Cursor as AsExpression<<CursorColumn as Expression>::SqlType>>::Expression>:
+        QueryFragment<Pg>,
 {
     fn walk_ast(&self, mut out: AstPass<Pg>) -> QueryResult<()> {
-        let table = <<Query as HasTable>::Table as HasTable>::table();
+        let table = <CursorColumn::Table as HasTable>::table();
         let from_clause = table.from_clause();
 
         out.push_sql("SELECT * FROM (");
         self.query.walk_ast(out.reborrow())?;
-        out.push_sql(") users ");
-        // from_clause.walk_ast(out.reborrow())?;
+        out.push_sql(") ");
+        from_clause.walk_ast(out.reborrow())?;
 
         out.push_sql(" WHERE ");
         out.push_sql("(");
@@ -63,7 +81,8 @@ where
         out.push_sql(" FROM ");
         from_clause.walk_ast(out.reborrow())?;
         out.push_sql(" WHERE ");
-        self.filter.walk_ast(out.reborrow())?;
+        let where_clause = self.cursor_column.eq(self.cursor.clone().as_expression());
+        where_clause.walk_ast(out.reborrow())?;
         out.push_sql(")");
 
         out.push_sql(" ORDER BY ");
@@ -167,7 +186,8 @@ mod test {
         let query = KeysetPaginated {
             query: users::table.select(users::all_columns),
             order: (users::slug, users::id),
-            filter: users::id.eq(two.id),
+            cursor: two.id,
+            cursor_column: users::id,
             page_size: 2,
         };
 
@@ -185,34 +205,34 @@ mod test {
         );
     }
 
-    // #[test]
-    // fn test_advanced_query() {
-    //     let db = connect_to_db();
+    #[test]
+    fn test_advanced_query() {
+        let db = connect_to_db();
 
-    //     let user = UserFactory::default().insert(&db);
+        let user = UserFactory::default().insert(&db);
 
-    //     let query = follows::table
-    //         .inner_join(users::table.on(users::id.eq(follows::followee_id)))
-    //         .filter(
-    //             follows::followee_type
-    //                 .eq("User")
-    //                 .and(follows::follower_id.eq(user.id))
-    //                 .and(follows::unfollowed_at.is_null()),
-    //         )
-    //         .select(users::all_columns);
+        let query = follows::table
+            .inner_join(users::table.on(users::id.eq(follows::followee_id)))
+            .filter(
+                follows::followee_type
+                    .eq("User")
+                    .and(follows::follower_id.eq(user.id))
+                    .and(follows::unfollowed_at.is_null()),
+            )
+            .select(users::all_columns);
 
-    //     let query = KeysetPaginated {
-    //         query,
-    //         order: (users::firstname, users::lastname),
-    //         // TODO: This should be a real cursor so an id from a previous query
-    //         filter: users::id.eq(user.id),
-    //         page_size: 20,
-    //     };
+        let query = KeysetPaginated {
+            query,
+            order: (users::firstname, users::lastname),
+            cursor_column: users::id,
+            cursor: user.id,
+            page_size: 20,
+        };
 
-    //     let users = query.load::<User>(&db).unwrap();
+        let users = query.load::<User>(&db).unwrap();
 
-    //     assert!(users.is_empty());
-    // }
+        assert!(users.is_empty());
+    }
 
     fn connect_to_db() -> PgConnection {
         let url = "postgres://localhost/tonsser-api_test";
