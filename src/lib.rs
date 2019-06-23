@@ -15,7 +15,7 @@ use diesel::QuerySource;
 pub struct KeysetPaginated<Query, Order, Cursor, CursorColumn> {
     pub query: Query,
     pub order: Order,
-    pub cursor: Cursor,
+    pub cursor: Option<Cursor>,
     pub cursor_column: CursorColumn,
     pub page_size: i64,
 }
@@ -70,20 +70,22 @@ where
         out.push_sql(") ");
         from_clause.walk_ast(out.reborrow())?;
 
-        out.push_sql(" WHERE ");
-        out.push_sql("(");
-        self.order.walk_ast(out.reborrow())?;
-        out.push_sql(")");
-        out.push_sql(" > ");
-        out.push_sql("(");
-        out.push_sql("SELECT ");
-        self.order.walk_ast(out.reborrow())?;
-        out.push_sql(" FROM ");
-        from_clause.walk_ast(out.reborrow())?;
-        out.push_sql(" WHERE ");
-        let where_clause = self.cursor_column.eq(self.cursor.clone().as_expression());
-        where_clause.walk_ast(out.reborrow())?;
-        out.push_sql(")");
+        if let Some(cursor) = &self.cursor {
+            out.push_sql(" WHERE ");
+            out.push_sql("(");
+            self.order.walk_ast(out.reborrow())?;
+            out.push_sql(")");
+            out.push_sql(" > ");
+            out.push_sql("(");
+            out.push_sql("SELECT ");
+            self.order.walk_ast(out.reborrow())?;
+            out.push_sql(" FROM ");
+            from_clause.walk_ast(out.reborrow())?;
+            out.push_sql(" WHERE ");
+            let where_clause = self.cursor_column.eq(cursor.clone().as_expression());
+            where_clause.walk_ast(out.reborrow())?;
+            out.push_sql(")");
+        }
 
         out.push_sql(" ORDER BY ");
         self.order.walk_ast(out.reborrow())?;
@@ -154,10 +156,7 @@ mod test {
     }
 
     #[test]
-    #[allow(unused_variables)]
     fn test_it() {
-        use schema::users;
-
         let url = "postgres://localhost/tonsser-api_test";
         let db = PgConnection::establish(url).unwrap();
         db.begin_test_transaction().unwrap();
@@ -186,7 +185,7 @@ mod test {
         let query = KeysetPaginated {
             query: users::table.select(users::all_columns),
             order: (users::slug, users::id),
-            cursor: two.id,
+            cursor: Some(two.id),
             cursor_column: users::id,
             page_size: 2,
         };
@@ -202,6 +201,52 @@ mod test {
                 .map(|user| user.firstname)
                 .collect::<Vec<_>>(),
             vec![three.firstname, four.firstname],
+        );
+    }
+
+    #[test]
+    fn test_without_cursor() {
+        let url = "postgres://localhost/tonsser-api_test";
+        let db = PgConnection::establish(url).unwrap();
+        db.begin_test_transaction().unwrap();
+
+        let one = UserFactory::default()
+            .firstname("one")
+            .slug("a")
+            .insert(&db);
+        let two = UserFactory::default()
+            .firstname("two")
+            .slug("ab")
+            .insert(&db);
+        let three = UserFactory::default()
+            .firstname("three")
+            .slug("abc")
+            .insert(&db);
+        let four = UserFactory::default()
+            .firstname("four")
+            .slug("abcd")
+            .insert(&db);
+        let five = UserFactory::default()
+            .firstname("five")
+            .slug("abdce")
+            .insert(&db);
+
+        let query = KeysetPaginated {
+            query: users::table.select(users::all_columns),
+            order: (users::slug, users::id),
+            cursor: None::<i32>,
+            cursor_column: users::id,
+            page_size: 2,
+        };
+
+        let users = query.load::<User>(&db).unwrap();
+
+        assert_eq!(
+            users
+                .into_iter()
+                .map(|user| user.firstname)
+                .collect::<Vec<_>>(),
+            vec![one.firstname, two.firstname],
         );
     }
 
@@ -225,7 +270,7 @@ mod test {
             query,
             order: (users::firstname, users::lastname),
             cursor_column: users::id,
-            cursor: user.id,
+            cursor: Some(user.id),
             page_size: 20,
         };
 
