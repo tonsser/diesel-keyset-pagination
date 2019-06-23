@@ -11,13 +11,63 @@ use diesel::sql_types::HasSqlType;
 use diesel::sql_types::*;
 use diesel::QuerySource;
 
+pub const DEFAULT_PAGE_SIZE: i64 = 0;
+
 #[derive(Debug)]
 pub struct KeysetPaginated<Query, Order, Cursor, CursorColumn> {
-    pub query: Query,
-    pub order: Order,
-    pub cursor: Option<Cursor>,
-    pub cursor_column: CursorColumn,
-    pub page_size: i64,
+    query: Query,
+    order: Order,
+    cursor: Option<(Cursor, CursorColumn)>,
+    page_size: i64,
+}
+
+#[derive(Debug)]
+pub struct KeysetPaginatedBuilder<Query, Order> {
+    query: Query,
+    order: Order,
+    page_size: i64,
+}
+
+impl<Query, Order> KeysetPaginatedBuilder<Query, Order> {
+    pub fn page_size(self, page_size: i64) -> Self {
+        KeysetPaginatedBuilder {
+            query: self.query,
+            order: self.order,
+            page_size,
+        }
+    }
+
+    pub fn cursor<CursorColumn, Cursor>(
+        self,
+        cursor_column: CursorColumn,
+        cursor: Option<Cursor>,
+    ) -> KeysetPaginated<Query, Order, Cursor, CursorColumn> {
+        let cursor = match cursor {
+            Some(cursor) => Some((cursor, cursor_column)),
+            None => None,
+        };
+
+        KeysetPaginated {
+            query: self.query,
+            order: self.order,
+            cursor,
+            page_size: self.page_size,
+        }
+    }
+}
+
+pub trait KeysetPaginateDsl<Order>: Sized {
+    fn keyset_paginate(self, order: Order) -> KeysetPaginatedBuilder<Self, Order>;
+}
+
+impl<Query, Order> KeysetPaginateDsl<Order> for Query {
+    fn keyset_paginate(self, order: Order) -> KeysetPaginatedBuilder<Self, Order> {
+        KeysetPaginatedBuilder {
+            query: self,
+            order,
+            page_size: DEFAULT_PAGE_SIZE,
+        }
+    }
 }
 
 impl<Query: QueryId, Order: QueryId, Cursor: 'static, CursorColumn: QueryId> QueryId
@@ -25,9 +75,7 @@ impl<Query: QueryId, Order: QueryId, Cursor: 'static, CursorColumn: QueryId> Que
 {
     type QueryId = KeysetPaginated<Query::QueryId, Order::QueryId, Cursor, CursorColumn::QueryId>;
 
-    const HAS_STATIC_QUERY_ID: bool = Query::HAS_STATIC_QUERY_ID
-        && Order::HAS_STATIC_QUERY_ID
-        && CursorColumn::HAS_STATIC_QUERY_ID;
+    const HAS_STATIC_QUERY_ID: bool = false;
 }
 
 impl<Query: query_builder::Query, Order, Cursor, CursorColumn> query_builder::Query
@@ -82,7 +130,7 @@ where
             out.push_sql(" FROM ");
             from_clause.walk_ast(out.reborrow())?;
             out.push_sql(" WHERE ");
-            let where_clause = self.cursor_column.eq(cursor.clone().as_expression());
+            let where_clause = cursor.1.eq(cursor.0.clone().as_expression());
             where_clause.walk_ast(out.reborrow())?;
             out.push_sql(")");
         }
@@ -182,13 +230,11 @@ mod test {
             .slug("abdce")
             .insert(&db);
 
-        let query = KeysetPaginated {
-            query: users::table.select(users::all_columns),
-            order: (users::slug, users::id),
-            cursor: Some(two.id),
-            cursor_column: users::id,
-            page_size: 2,
-        };
+        let query = users::table
+            .select(users::all_columns)
+            .keyset_paginate((users::slug, users::id))
+            .page_size(2)
+            .cursor(users::id, Some(two.id));
 
         let sql = diesel::debug_query::<Pg, _>(&query).to_string();
         eprintln!("{}\n\n", sql);
@@ -231,13 +277,11 @@ mod test {
             .slug("abdce")
             .insert(&db);
 
-        let query = KeysetPaginated {
-            query: users::table.select(users::all_columns),
-            order: (users::slug, users::id),
-            cursor: None::<i32>,
-            cursor_column: users::id,
-            page_size: 2,
-        };
+        let query = users::table
+            .select(users::all_columns)
+            .keyset_paginate((users::slug, users::id))
+            .page_size(2)
+            .cursor(users::id, None::<i32>);
 
         let users = query.load::<User>(&db).unwrap();
 
@@ -266,13 +310,9 @@ mod test {
             )
             .select(users::all_columns);
 
-        let query = KeysetPaginated {
-            query,
-            order: (users::firstname, users::lastname),
-            cursor_column: users::id,
-            cursor: Some(user.id),
-            page_size: 20,
-        };
+        let query = query
+            .keyset_paginate((users::firstname, users::lastname))
+            .cursor(users::id, Some(user.id));
 
         let users = query.load::<User>(&db).unwrap();
 
