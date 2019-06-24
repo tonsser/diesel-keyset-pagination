@@ -319,6 +319,73 @@ mod test {
         assert!(users.is_empty());
     }
 
+    #[test]
+    fn ordering_by_id() {
+        let url = "postgres://localhost/tonsser-api_test";
+        let db = PgConnection::establish(url).unwrap();
+        db.begin_test_transaction().unwrap();
+
+        let mut users = vec![
+            UserFactory::default().slug("one").insert(&db),
+            UserFactory::default().slug("two").insert(&db),
+            UserFactory::default().slug("three").insert(&db),
+            UserFactory::default().slug("four").insert(&db),
+            UserFactory::default().slug("five").insert(&db),
+        ];
+        users.sort_by_key(|user| user.id);
+        let one = users.remove(0);
+        let two = users.remove(0);
+        let three = users.remove(0);
+        let four = users.remove(0);
+        let five = users.remove(0);
+        assert!(users.is_empty());
+
+        let page_1 = users::table
+            .select(users::all_columns)
+            .keyset_paginate(users::id)
+            .page_size(2)
+            .cursor(users::id, None::<i32>)
+            .load::<User>(&db).unwrap();
+
+        assert_eq!(
+            page_1
+                .into_iter()
+                .map(|user| user.slug)
+                .collect::<Vec<_>>(),
+            vec![one.slug, two.slug],
+        );
+
+        let page_2 = users::table
+            .select(users::all_columns)
+            .keyset_paginate(users::id)
+            .page_size(2)
+            .cursor(users::id, Some(two.id))
+            .load::<User>(&db).unwrap();
+
+        assert_eq!(
+            page_2
+                .into_iter()
+                .map(|user| user.slug)
+                .collect::<Vec<_>>(),
+            vec![three.slug, four.slug],
+        );
+
+        let page_3 = users::table
+            .select(users::all_columns)
+            .keyset_paginate(users::id)
+            .page_size(2)
+            .cursor(users::id, Some(four.id))
+            .load::<User>(&db).unwrap();
+
+        assert_eq!(
+            page_3
+                .into_iter()
+                .map(|user| user.slug)
+                .collect::<Vec<_>>(),
+            vec![five.slug],
+        );
+    }
+
     fn connect_to_db() -> PgConnection {
         let url = "postgres://localhost/tonsser-api_test";
         let db = PgConnection::establish(url).unwrap();
