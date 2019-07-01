@@ -5,7 +5,9 @@ authors = ["David Pedersen <david.pdrsn@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-diesel = { version = "^1.4", features = ["postgres"] }
+diesel = { version = "^1.4", features = ["postgres", "chrono"] }
 
 [dev-dependencies]
 diesel-factories = "0.1.2"
+chrono = "0.4.7"
+trybuild = "1.0.6"

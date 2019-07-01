@@ -6,7 +6,10 @@ use diesel::expression::operators::Eq;
 use diesel::expression::{AsExpression, Expression};
 use diesel::pg::Pg;
 use diesel::prelude::*;
+use diesel::query_builder::Query;
+use diesel::query_builder::SelectQuery;
 use diesel::query_builder::{self, AstPass, QueryFragment, QueryId};
+use diesel::query_dsl::methods;
 use diesel::sql_types::HasSqlType;
 use diesel::sql_types::*;
 use diesel::QuerySource;
@@ -57,11 +60,11 @@ impl<Query, Order> KeysetPaginatedBuilder<Query, Order> {
 }
 
 pub trait KeysetPaginateDsl<Order>: Sized {
-    fn keyset_paginate(self, order: Order) -> KeysetPaginatedBuilder<Self, Order>;
+    fn keyset_paginate_order_by(self, order: Order) -> KeysetPaginatedBuilder<Self, Order>;
 }
 
 impl<Query, Order> KeysetPaginateDsl<Order> for Query {
-    fn keyset_paginate(self, order: Order) -> KeysetPaginatedBuilder<Self, Order> {
+    fn keyset_paginate_order_by(self, order: Order) -> KeysetPaginatedBuilder<Self, Order> {
         KeysetPaginatedBuilder {
             query: self,
             order,
@@ -92,17 +95,20 @@ impl<Query, Order, Cursor, CursorColumn, C> RunQueryDsl<C>
 impl<Query, Order, Cursor, CursorColumn> QueryFragment<Pg>
     for KeysetPaginated<Query, Order, Cursor, CursorColumn>
 where
-    Query: QueryFragment<Pg>,
-    Order: QueryFragment<Pg> + Expression,
-    Pg: HasSqlType<Order::SqlType>,
+    Pg: HasSqlType<Order::SqlType> + HasSqlType<CursorColumn::SqlType>,
 
-    CursorColumn: Column,
+    Query: query_builder::Query + SelectQuery + QueryFragment<Pg>,
+    Query: methods::SelectDsl<Order> + methods::SelectDsl<CursorColumn>,
+
+    Order: QueryFragment<Pg> + Expression,
+
+    CursorColumn: Column + Expression,
     CursorColumn::Table: HasTable,
     <<CursorColumn::Table as HasTable>::Table as QuerySource>::FromClause: QueryFragment<Pg>,
-
     // This `Copy` is necessary because `.eq` moves `self`
     // Diesel columns always implement `Copy` to should be save
     CursorColumn: ExpressionMethods + Copy,
+
     // This `Clone` is necessary because `.as_expression` moves `self`
     // There might be a way to get around it, but I don't know how yet
     Cursor: AsExpression<CursorColumn::SqlType> + Clone,
@@ -149,6 +155,7 @@ where
 mod test {
     #[allow(unused_imports)]
     use super::*;
+    use chrono::prelude::*;
     use diesel_factories::{sequence, Factory};
     use schema::*;
 
@@ -174,6 +181,17 @@ mod test {
         }
 
         allow_tables_to_appear_in_same_query!(follows, users);
+    }
+
+    #[derive(Eq, PartialEq, Debug, Clone, QueryableByName, Queryable, Identifiable)]
+    #[table_name = "follows"]
+    pub struct Follow {
+        followee_id: i32,
+        followee_type: Option<String>,
+        follower_id: i32,
+        id: i32,
+        source: Option<String>,
+        unfollowed_at: Option<DateTime<Utc>>,
     }
 
     #[derive(Eq, PartialEq, Debug, Clone, QueryableByName, Queryable, Identifiable)]
@@ -232,7 +250,7 @@ mod test {
 
         let query = users::table
             .select(users::all_columns)
-            .keyset_paginate((users::slug, users::id))
+            .keyset_paginate_order_by((users::slug, users::id))
             .page_size(2)
             .cursor(users::id, Some(two.id));
 
@@ -279,7 +297,7 @@ mod test {
 
         let query = users::table
             .select(users::all_columns)
-            .keyset_paginate((users::slug, users::id))
+            .keyset_paginate_order_by((users::slug, users::id))
             .page_size(2)
             .cursor(users::id, None::<i32>);
 
@@ -311,7 +329,7 @@ mod test {
             .select(users::all_columns);
 
         let query = query
-            .keyset_paginate((users::firstname, users::lastname))
+            .keyset_paginate_order_by((users::firstname, users::lastname))
             .cursor(users::id, Some(user.id));
 
         let users = query.load::<User>(&db).unwrap();
@@ -342,48 +360,48 @@ mod test {
 
         let page_1 = users::table
             .select(users::all_columns)
-            .keyset_paginate(users::id)
+            .keyset_paginate_order_by(users::id)
             .page_size(2)
             .cursor(users::id, None::<i32>)
-            .load::<User>(&db).unwrap();
+            .load::<User>(&db)
+            .unwrap();
 
         assert_eq!(
-            page_1
-                .into_iter()
-                .map(|user| user.slug)
-                .collect::<Vec<_>>(),
+            page_1.into_iter().map(|user| user.slug).collect::<Vec<_>>(),
             vec![one.slug, two.slug],
         );
 
         let page_2 = users::table
             .select(users::all_columns)
-            .keyset_paginate(users::id)
+            .keyset_paginate_order_by(users::id)
             .page_size(2)
             .cursor(users::id, Some(two.id))
-            .load::<User>(&db).unwrap();
+            .load::<User>(&db)
+            .unwrap();
 
         assert_eq!(
-            page_2
-                .into_iter()
-                .map(|user| user.slug)
-                .collect::<Vec<_>>(),
+            page_2.into_iter().map(|user| user.slug).collect::<Vec<_>>(),
             vec![three.slug, four.slug],
         );
 
         let page_3 = users::table
             .select(users::all_columns)
-            .keyset_paginate(users::id)
+            .keyset_paginate_order_by(users::id)
             .page_size(2)
             .cursor(users::id, Some(four.id))
-            .load::<User>(&db).unwrap();
+            .load::<User>(&db)
+            .unwrap();
 
         assert_eq!(
-            page_3
-                .into_iter()
-                .map(|user| user.slug)
-                .collect::<Vec<_>>(),
+            page_3.into_iter().map(|user| user.slug).collect::<Vec<_>>(),
             vec![five.slug],
         );
+    }
+
+    #[test]
+    fn compile_errors() {
+        let t = trybuild::TestCases::new();
+        t.compile_fail("tests/compile_fail/*.rs");
     }
 
     fn connect_to_db() -> PgConnection {
